@@ -36,6 +36,9 @@ struct AllocationMetadata {
 #else
     // CUDA and ROCm 7.0+: Single allocation handle
     CUmemGenericAllocationHandle allocHandle;
+    // VMM requires size aligned to allocation granularity (e.g. 2MB).
+    // Paddle may pass unaligned sizes; we store the aligned size for VMM ops.
+    size_t aligned_size;
 #endif
 };
 

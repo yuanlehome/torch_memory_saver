@@ -1,197 +1,121 @@
 """
-This example demonstrates the core functionalities of torch_memory_saver, and the detailed comments act
-as a short tutorial for readers who want to understand the library. It validates how virtual addresses
-remain unchanged while physical memory is released during pause and reallocated upon resume, illustrating the
-mechanisms of pausing and resuming memory regions, the implications for data consistency, and the preservation
-of functional integrity for tensor operations and CUDA graphs.
+This example demonstrates the core functionalities of torch_memory_saver with Paddle backend.
 """
 
 import logging
-import os
 import sys
 from typing import Callable
 
-import torch
+import paddle
+import paddle.device.cuda as paddle_cuda
+from paddle.device.cuda.graphs import CUDAGraph
 import time
 from torch_memory_saver import torch_memory_saver
 from torch_memory_saver.testing_utils import get_and_print_gpu_memory
 
-# Define the size of a large tensor for simulating KV cache
-# Size: 5 * 100,000,000 * 4 bytes = 2GB
-dummy_tensor_size = (5, 100_000_000,)
+# KV cache: 5 * 100,000,000 * 4 bytes = 2GB
+dummy_tensor_size = [5, 100_000_000]
+# Model weights: 4096 * 4096 * 4 bytes = 64MB (small enough to avoid OOM)
+MODEL_DIM = 4096
 
 
 def _ptr(x):
-    """
-    Get the virtual address of a tensor.
-    
-    Virtual Address is the address that the process sees, not the actual physical memory address.
-    It needs to be mapped to actual GPU physical memory through the CUDA driver.
-    In torch_memory_saver, this virtual address remains unchanged during pause/resume operations.
-    """
-    assert isinstance(x, torch.Tensor)
+    assert isinstance(x, paddle.Tensor)
     return hex(x.data_ptr())
 
 
 class Model:
-    """
-    Simulate a neural network model for validating memory management of model weights.
-    
-    Validation objectives:
-    1. Whether model weights can maintain functional integrity during pause/resume operations.
-    2. Virtual address remains unchanged, but physical memory is reallocated.
-    3. Weights need to be reinitialized because physical memory content is lost.
-    """
-
-    def __init__(self, input_size=20_480, output_size=20_480):
-        self.input_size = input_size
-        self.output_size = output_size
+    def __init__(self, dim=MODEL_DIM):
+        self.dim = dim
         self.create_weights()
 
     def create_weights(self):
-        """
-        Create model weights in the region managed by torch_memory_saver.
-        
-        Use torch_memory_saver.region() to mark this memory allocation,
-        enabling subsequent pause/resume operations through tags.
-        """
         with torch_memory_saver.region(tag="model_weights"):
-            # Create a large linear layer weight matrix.
-            # Size: 20480 * 20480 * 4 bytes ≈ 1.6GB
-            self.linear = torch.nn.Linear(self.input_size, self.output_size, bias=False, device='cuda')
-            torch.nn.init.ones_(self.linear.weight)
+            # Use a 1D weight vector instead of Linear layer to avoid matmul
+            # (Paddle CUDA graphs have known issues with matmul when input changes)
+            self.weight = paddle.full([self.dim], 1.0, dtype='float32').cuda()
+        print(f'Model weights created: {_ptr(self.weight)}')
 
-        print(f'Model weights created: {_ptr(self.linear.weight)}')
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x).mean()
+    def forward(self, x):
+        # Elementwise multiply then mean (avoids matmul)
+        return (x * self.weight).mean()
 
     def clear_weights(self):
-        del self.linear
+        del self.weight
 
 
 class KVCache:
-    """
-    Simulate KV cache for validating memory management of cache data.
-    
-    Verify that virtual address remains unchanged while physical memory is reallocated.
-    """
-
     def __init__(self):
         self.create_buffers(1)
 
     def create_buffers(self, value):
-        """
-        Create KV cache in the region managed by torch_memory_saver.
-        
-        Use torch_memory_saver.region() to mark this memory allocation,
-        enabling subsequent pause/resume operations through tags.
-        """
         with torch_memory_saver.region(tag="kv_cache"):
-            # Create a large KV cache tensor.
-            # Size: 5 * 100,000,000 * 4 bytes = 2GB
-            self.kv_buffer = torch.full(dummy_tensor_size, value, dtype=torch.float32, device='cuda')
+            self.kv_buffer = paddle.full(dummy_tensor_size, value, dtype='float32').cuda()
         print(f'KV cache created: {_ptr(self.kv_buffer)}')
 
     def clear_buffers(self):
         del self.kv_buffer
 
-    def execute(self, arg: torch.Tensor) -> torch.Tensor:
-        """Execute KV cache operation, returns the combined result of input and cache data."""
-        return (arg + self.kv_buffer.mean(dim=1)).mean()
+    def execute(self, arg):
+        return (arg + self.kv_buffer.mean(axis=1)).mean()
 
 
-# https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/
 def create_cuda_graph(fn: Callable):
-    """
-    Create CUDA graph for validating the impact of memory management on CUDA graphs.
-    
-    Validation objectives:
-    1. Whether CUDA graphs can still work normally after pause/resume.
-    2. The importance of virtual address remaining unchanged for CUDA graphs.
-    3. CUDA graphs can still execute correctly even when physical memory is reallocated.
-    """
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s):
-        fn()
-    torch.cuda.current_stream().wait_stream(s)
+    place = paddle.CUDAPlace(0)
 
-    g = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(g):
+    s = paddle_cuda.Stream()
+    cs = paddle_cuda.current_stream()
+    s.wait_stream(cs)
+    with paddle_cuda.stream_guard(s):
         fn()
+    cs.wait_stream(s)
+
+    g = CUDAGraph(place=place, mode='thread_local')
+    g.capture_begin()
+    fn()
+    g.capture_end()
 
     return g
 
 
 def run(hook_mode: str):
-    """
-    Main test function: validate the core functionality of torch_memory_saver.
-    
-    Core concept validation:
-    
-    1. Virtual Address vs Physical Memory mapping relationship.
-       - Virtual Address remains unchanged during pause/resume operations.
-       - Physical Memory is released during pause, reallocated during resume.
-    
-    2. Pause mechanism.
-       - Disconnect the mapping from virtual address to physical memory.
-       - Release physical memory back to GPU memory pool.
-       - Keep virtual address unchanged.
-       - Accessing paused tensors will cause CUDA errors.
-    
-    3. Resume mechanism.
-       - Allocate new physical memory from GPU memory pool.
-       - Re-establish mapping from virtual address to new physical memory.
-       - Newly allocated physical memory content is undefined (usually 0).
-       - Data needs to be reinitialized.
-    
-    4. Data consistency.
-       - Data is lost during pause (physical memory is released).
-       - Data is undefined after resume (new physical memory).
-       - Data must be reset to be used normally.
-    
-    5. Functional integrity.
-       - Tensor operations can still work normally even when physical memory is reallocated.
-       - CUDA graphs can still execute correctly (because virtual address remains unchanged).
-       - Selective pause/resume functionality works normally.
-    """
-
     torch_memory_saver.hook_mode = hook_mode
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
     cache = KVCache()
     model = Model()
     original_kv_cache_ptr = _ptr(cache.kv_buffer)
-    original_model_weights_ptr = _ptr(model.linear.weight)
+    original_model_weights_ptr = _ptr(model.weight)
     print(f'Original addresses - KV cache: {original_kv_cache_ptr}, Model weights: {original_model_weights_ptr}')
 
-    # Create static input/output tensors for CUDA graphs
-    # These tensors are not managed by torch_memory_saver, addresses will change normally
-    static_input = torch.zeros((20_480,), dtype=torch.float32, device='cuda')
-    static_output = torch.zeros((), dtype=torch.float32, device='cuda')
+    static_input = paddle.ones([MODEL_DIM], dtype='float32').cuda()
+
+    # Use tensor assignment approach (like cuda_graph.py) instead of pre-allocated buffers
+    # Paddle CUDA graphs work by capturing tensor computations; the output tensor
+    # from the captured fn is the stable reference for subsequent replays.
+    class GraphOutputs:
+        static_output = None
 
     def fn():
-        """Function executed in CUDA graph: combine KV cache and model computation"""
-        nonlocal static_output
-        kv_output = cache.execute(static_input[:5])
-        model_output = model.forward(static_input)
-        static_output = kv_output + model_output
+        kv_out = cache.execute(static_input[:5])
+        model_out = model.forward(static_input)
+        GraphOutputs.static_output = kv_out + model_out
 
-    # Create CUDA graph
     g = create_cuda_graph(fn)
 
-    # First execution of CUDA graph
     static_input[...] = 100
     g.replay()
-    print(f'First execution result: {static_output.item()}')
-    if static_output != 2048101:
-        raise ValueError(f'Expected 2048101, got {static_output}')
-    print("✓ CUDA graph first execution passed!")
+    result = float(GraphOutputs.static_output.item())
+    print(f'First execution result: {result}')
+    # kv_output = (100 + 1).mean() = 101
+    # model_output = (weight * input).mean() = 1 * 100 = 100
+    expected = 101.0 + 100.0
+    if abs(result - expected) > 0.1:
+        raise ValueError(f'Expected {expected}, got {result}')
+    print("CUDA graph first execution passed!")
 
     time.sleep(1)
 
-    # Pause memory regions
     print('\n=== Pausing memory regions ===')
     get_and_print_gpu_memory("model_weights: allocated, kv_cache: allocated")
     torch_memory_saver.pause("kv_cache")
@@ -201,7 +125,6 @@ def run(hook_mode: str):
 
     time.sleep(1)
 
-    # Resume memory regions
     print('\n=== Resuming memory regions ===')
     torch_memory_saver.resume("model_weights")
     get_and_print_gpu_memory("model_weights: resumed, kv_cache: released")
@@ -210,10 +133,9 @@ def run(hook_mode: str):
 
     time.sleep(1)
 
-    # Verify virtual addresses remain unchanged
     print('\n=== Virtual Address Verification ===')
     kv_cache_ptr_after_resume = _ptr(cache.kv_buffer)
-    model_weights_ptr_after_resume = _ptr(model.linear.weight)
+    model_weights_ptr_after_resume = _ptr(model.weight)
 
     kv_address_unchanged = kv_cache_ptr_after_resume == original_kv_cache_ptr
     model_address_unchanged = model_weights_ptr_after_resume == original_model_weights_ptr
@@ -223,47 +145,43 @@ def run(hook_mode: str):
 
     assert kv_address_unchanged, f"KV cache virtual address changed"
     assert model_address_unchanged, f"Model weights virtual address changed"
-    print("✓ Virtual addresses verification passed!")
+    print("Virtual addresses verification passed!")
 
     time.sleep(1)
 
-    # Reinitialize data and test functionality
     print('\n=== Testing functionality after resume ===')
     cache.kv_buffer[...] = 2
-    with torch.no_grad():
-        model.linear.weight[...] = 2
+    model.weight[...] = 2
 
-    # Second execution of CUDA graph, validate functional integrity
-    # Even when physical memory is reallocated, CUDA graph can still work normally
-    # This is because virtual address remains unchanged, addresses recorded in CUDA graph are still valid
     static_input[...] = 200
     g.replay()
-    print(f'Second execution result: {static_output.item()}')
-    if static_output != 8192202:
-        raise ValueError(f'Expected 8192202, got {static_output}')
-    print("✓ CUDA graph second execution passed!")
+    result2 = float(GraphOutputs.static_output.item())
+    print(f'Second execution result: {result2}')
+    # kv_output = (200 + 2).mean() = 202
+    # model_output = (weight * input).mean() = 2 * 200 = 400
+    expected2 = 202.0 + 400.0
+    if abs(result2 - expected2) > 0.1:
+        raise ValueError(f'Expected {expected2}, got {result2}')
+    print("CUDA graph second execution passed!")
 
     time.sleep(1)
 
-    # Test selective pause/resume
     print('\n=== Testing selective pause/resume ===')
     torch_memory_saver.pause("kv_cache")
     get_and_print_gpu_memory("model_weights: resumed, kv_cache: released")
 
-    # Verify model weights can still be accessed
     try:
-        _ = model.linear.weight[0, 0]
-        print("✓ Model weights access successful")
-    except:
-        print("✗ Model weights access failed")
+        _ = model.weight[0]
+        print("Model weights access successful")
+    except Exception:
+        print("Model weights access failed")
         raise
 
     torch_memory_saver.resume("kv_cache")
     get_and_print_gpu_memory("model_weights: resumed, kv_cache: resumed")
 
-    print("✓ Selective pause/resume test passed!")
-
-    print("\n🎉 All tests passed! torch_memory_saver is working correctly.")
+    print("Selective pause/resume test passed!")
+    print("\nAll tests passed! torch_memory_saver is working correctly.")
 
 
 if __name__ == '__main__':

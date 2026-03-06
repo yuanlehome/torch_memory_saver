@@ -110,10 +110,10 @@ def _create_ext_modules(platform):
         libraries = ['cuda', 'cudart']
         platform_macros = [('USE_CUDA', '1')]
     
-    # Create extensions with different hook modes
+    # Only build the preload binary (torch mode not supported for paddle backend)
     ext_modules = [
         PlatformExtension(
-            name,
+            'torch_memory_saver_hook_mode_preload',
             sources,
             platform=platform,
             include_dirs=include_dirs,
@@ -122,15 +122,11 @@ def _create_ext_modules(platform):
             define_macros=[
                 *common_macros,
                 *platform_macros,
-                *extra_macros,
+                ('TMS_HOOK_MODE_PRELOAD', '1'),
             ],
             py_limited_api=True,
             extra_compile_args=extra_compile_args,
         )
-        for name, extra_macros in [
-            ('torch_memory_saver_hook_mode_preload', [('TMS_HOOK_MODE_PRELOAD', '1')]),
-            ('torch_memory_saver_hook_mode_torch', [('TMS_HOOK_MODE_TORCH', '1')]),
-        ]
     ]
     
     return ext_modules

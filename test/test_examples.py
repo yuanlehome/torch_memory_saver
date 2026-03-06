@@ -8,32 +8,28 @@ from torch_memory_saver.utils import change_env
 
 from examples import simple, cuda_graph, cpu_backup, rl_example, multi_device, training_engine
 
-_HOOK_MODES = ["preload", "torch"]
+# Only preload mode is supported for paddle backend
+_HOOK_MODES = ["preload"]
 
 
-@pytest.mark.parametrize("hook_mode", _HOOK_MODES)
-def test_simple(hook_mode):
-    _test_core(simple.run, hook_mode=hook_mode)
+def test_simple():
+    _test_core(simple.run, hook_mode="preload")
 
 
-@pytest.mark.parametrize("hook_mode", _HOOK_MODES)
-def test_cuda_graph(hook_mode):
-    _test_core(cuda_graph.run, hook_mode=hook_mode)
+def test_cuda_graph():
+    _test_core(cuda_graph.run, hook_mode="preload")
 
 
-@pytest.mark.parametrize("hook_mode", _HOOK_MODES)
-def test_cpu_backup(hook_mode):
-    _test_core(cpu_backup.run, hook_mode=hook_mode)
+def test_cpu_backup():
+    _test_core(cpu_backup.run, hook_mode="preload")
 
 
-@pytest.mark.parametrize("hook_mode", _HOOK_MODES)
-def test_multi_device(hook_mode):
-    _test_core(multi_device.run, hook_mode=hook_mode)
+def test_multi_device():
+    _test_core(multi_device.run, hook_mode="preload")
 
 
-@pytest.mark.parametrize("hook_mode", _HOOK_MODES)
-def test_rl_example(hook_mode):
-    _test_core(rl_example.run, hook_mode=hook_mode)
+def test_rl_example():
+    _test_core(rl_example.run, hook_mode="preload")
 
 
 def test_training_engine():
@@ -56,7 +52,7 @@ def _run_in_subprocess(fn, fn_kwargs):
     proc = ctx.Process(target=_subprocess_fn_wrapper, args=(fn, fn_kwargs, output_queue))
     proc.start()
     proc.join()
-    success = output_queue.get() if fn_kwargs.get("hook_mode", "torch") == "torch" else proc.exitcode == 0
+    success = proc.exitcode == 0
     assert success
 
 

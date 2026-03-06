@@ -1,6 +1,7 @@
 import logging
 import sys
-import torch
+import paddle
+import paddle.device.cuda as paddle_cuda
 from torch_memory_saver import torch_memory_saver
 
 import time
@@ -12,18 +13,14 @@ def run(hook_mode: str):
     torch_memory_saver.hook_mode = hook_mode
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
-    normal_tensor = torch.full((1_000_000,), 100, dtype=torch.uint8, device='cuda')
-    # Currently AMD - ROCm Implementation require the below tensor size
-    # normal_tensor = torch.full((1_000_000_0,), 100, dtype=torch.uint8, device='cuda')
+    normal_tensor = paddle.full([1_000_000], 100, dtype='uint8').cuda()
 
     with torch_memory_saver.region():
-        pauseable_tensor = torch.full((1_000_000_000,), 100, dtype=torch.uint8, device='cuda')
-        # Currently AMD - ROCm Implementation require the below tensor size
-        # pauseable_tensor = torch.full((1_000_000_000_0,), 100, dtype=torch.uint8, device='cuda')
+        pauseable_tensor = paddle.full([1_000_000_000], 100, dtype='uint8').cuda()
 
     original_address = pauseable_tensor.data_ptr()
     print(f"Pauseable tensor virtual address: 0x{original_address:x}")
-    print(f'{normal_tensor=} {pauseable_tensor=}')
+    print(f'normal_tensor={normal_tensor} pauseable_tensor={pauseable_tensor}')
 
     mem_before_pause = get_and_print_gpu_memory("Before pause")
 
@@ -51,16 +48,16 @@ def run(hook_mode: str):
     print('sleep...')
     time.sleep(1)
 
-    print(f'{normal_tensor=} {pauseable_tensor=}')
+    print(f'normal_tensor={normal_tensor} pauseable_tensor={pauseable_tensor}')
 
     get_and_print_gpu_memory("Before empty cache")
-    torch.cuda.empty_cache()
+    paddle_cuda.empty_cache()
     get_and_print_gpu_memory("After empty cache")
 
     del normal_tensor, pauseable_tensor
 
     get_and_print_gpu_memory("Before empty cache (tensor deleted)")
-    torch.cuda.empty_cache()
+    paddle_cuda.empty_cache()
     get_and_print_gpu_memory("After empty cache (tensor deleted)")
 
 

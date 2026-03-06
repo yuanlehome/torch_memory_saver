@@ -31,20 +31,25 @@ cudaError_t TorchMemorySaver::malloc(void **ptr, CUdevice device, size_t size, c
 
     CUmemGenericAllocationHandle allocHandle;
 
-    cudaError_t ret = CUDAUtils::cu_mem_create(&allocHandle, size, device);
+    // Align size to VMM granularity (2MB). Paddle passes unaligned sizes unlike
+    // PyTorch, and cuMemCreate/cuMemAddressReserve require aligned sizes.
+    static const size_t VMM_GRANULARITY = 2UL * 1024 * 1024;  // 2MB
+    const size_t aligned_size = (size + VMM_GRANULARITY - 1) / VMM_GRANULARITY * VMM_GRANULARITY;
+
+    cudaError_t ret = CUDAUtils::cu_mem_create(&allocHandle, aligned_size, device);
     if (ret != cudaSuccess) {
         return ret;
     }
 
-    CURESULT_CHECK(cuMemAddressReserve((CUdeviceptr *) ptr, size, 0, 0, 0));
-    CURESULT_CHECK(cuMemMap((CUdeviceptr) * ptr, size, 0, allocHandle, 0));
-    CUDAUtils::cu_mem_set_access(*ptr, size, device);
+    CURESULT_CHECK(cuMemAddressReserve((CUdeviceptr *) ptr, aligned_size, 0, 0, 0));
+    CURESULT_CHECK(cuMemMap((CUdeviceptr) * ptr, aligned_size, 0, allocHandle, 0));
+    CUDAUtils::cu_mem_set_access(*ptr, aligned_size, device);
 
     {
         const std::lock_guard<std::mutex> lock(allocator_metadata_mutex_);
         allocation_metadata_.emplace(
             *ptr,
-            AllocationMetadata{size, device, tag, AllocationState::ACTIVE, enable_cpu_backup, nullptr, allocHandle}
+            AllocationMetadata{size, device, tag, AllocationState::ACTIVE, enable_cpu_backup, nullptr, allocHandle, aligned_size}
         );
     }
 
@@ -77,9 +82,13 @@ cudaError_t TorchMemorySaver::free(void *ptr) {
 
     CUDA_ERROR_CHECK(cudaDeviceSynchronize());
 
-    CURESULT_CHECK(cuMemUnmap((CUdeviceptr) ptr, metadata.size));
-    CURESULT_CHECK(cuMemRelease(metadata.allocHandle));
-    CURESULT_CHECK(cuMemAddressFree((CUdeviceptr) ptr, metadata.size));
+    if (metadata.state == AllocationState::ACTIVE) {
+        // Unmap and release physical pages (only if currently mapped)
+        CURESULT_CHECK(cuMemUnmap((CUdeviceptr) ptr, metadata.aligned_size));
+        CURESULT_CHECK(cuMemRelease(metadata.allocHandle));
+    }
+    // Always free the virtual address reservation
+    CURESULT_CHECK(cuMemAddressFree((CUdeviceptr) ptr, metadata.aligned_size));
 
     if (nullptr != metadata.cpu_backup) {
         CUDA_ERROR_CHECK(cudaFreeHost(metadata.cpu_backup));
@@ -129,7 +138,7 @@ void TorchMemorySaver::pause(const std::string& tag) {
             CUDA_ERROR_CHECK(cudaMemcpy(metadata.cpu_backup, ptr, metadata.size, cudaMemcpyDeviceToHost));
         }
 
-        CURESULT_CHECK(cuMemUnmap((CUdeviceptr) ptr, metadata.size));
+        CURESULT_CHECK(cuMemUnmap((CUdeviceptr) ptr, metadata.aligned_size));
         CURESULT_CHECK(cuMemRelease(metadata.allocHandle));
 
         metadata.state = AllocationState::PAUSED;
@@ -169,11 +178,11 @@ void TorchMemorySaver::resume(const std::string& tag) {
         }
 
         CUmemGenericAllocationHandle newAllocHandle;
-        CUDA_ERROR_CHECK(CUDAUtils::cu_mem_create(&newAllocHandle, metadata.size, metadata.device));
+        CUDA_ERROR_CHECK(CUDAUtils::cu_mem_create(&newAllocHandle, metadata.aligned_size, metadata.device));
 
-        CURESULT_CHECK(cuMemMap((CUdeviceptr) ptr, metadata.size, 0, newAllocHandle, 0));
+        CURESULT_CHECK(cuMemMap((CUdeviceptr) ptr, metadata.aligned_size, 0, newAllocHandle, 0));
 
-        CUDAUtils::cu_mem_set_access(ptr, metadata.size, metadata.device);
+        CUDAUtils::cu_mem_set_access(ptr, metadata.aligned_size, metadata.device);
 
         if (metadata.enable_cpu_backup) {
             SIMPLE_CHECK(metadata.cpu_backup != nullptr, "cpu_backup should not be nullptr");
@@ -211,7 +220,7 @@ uint8_t* TorchMemorySaver::get_cpu_backup_pointer(const uint8_t* query_gpu_ptr, 
 #if TMS_ROCM_LEGACY_CHUNKED
         size_t total_size = metadata.aligned_size;
 #else
-        size_t total_size = metadata.size;
+        size_t total_size = metadata.aligned_size;
 #endif
 
         if ((ptr <= query_gpu_ptr) && (query_gpu_ptr + query_size <= ptr + total_size)) {
