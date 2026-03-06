@@ -59,8 +59,7 @@ def create_cuda_graph(fn: Callable):
     return g
 
 
-def run(hook_mode: str):
-    torch_memory_saver.hook_mode = hook_mode
+def run():
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
     cache = KVCache()
@@ -102,14 +101,13 @@ def run(hook_mode: str):
     mem_after_pause_kv_cache = get_and_print_gpu_memory("After pause kv_cache")
     assert mem_before_pause - mem_after_pause_kv_cache > 400_000_000
 
-    if hook_mode == "preload":
-        print('call memory_saver.pause("graph")')
-        torch_memory_saver.pause("graph")
-        print('sleep...')
-        time.sleep(1)
+    print('call memory_saver.pause("graph")')
+    torch_memory_saver.pause("graph")
+    print('sleep...')
+    time.sleep(1)
 
-        mem_after_pause_graph = get_and_print_gpu_memory("After pause graph")
-        assert mem_after_pause_kv_cache - mem_after_pause_graph > 800_000_000
+    mem_after_pause_graph = get_and_print_gpu_memory("After pause graph")
+    assert mem_after_pause_kv_cache - mem_after_pause_graph > 800_000_000
 
     print('when kv cache is released, we can allocate *other* big tensors')
     other_big_tensor = paddle.zeros([2500_000_000], dtype='uint8').cuda()
@@ -121,9 +119,8 @@ def run(hook_mode: str):
     print('sleep...')
     time.sleep(1)
 
-    if hook_mode == "preload":
-        print('call memory_saver.resume("graph")')
-        torch_memory_saver.resume("graph")
+    print('call memory_saver.resume("graph")')
+    torch_memory_saver.resume("graph")
     print('call memory_saver.resume("kv_cache")')
     torch_memory_saver.resume("kv_cache")
 
@@ -145,4 +142,4 @@ def run(hook_mode: str):
 
 
 if __name__ == '__main__':
-    run(hook_mode=sys.argv[1])
+    run()

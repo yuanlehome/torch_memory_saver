@@ -6,8 +6,7 @@ import paddle
 from torch_memory_saver import torch_memory_saver
 
 
-def run(hook_mode: str):
-    torch_memory_saver.hook_mode = hook_mode
+def run():
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
     print("Allocate tensor_with_backup")
@@ -40,4 +39,4 @@ def run(hook_mode: str):
 
 
 if __name__ == '__main__':
-    run(hook_mode=sys.argv[1])
+    run()

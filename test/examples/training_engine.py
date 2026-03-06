@@ -10,12 +10,10 @@ from torch_memory_saver import torch_memory_saver
 from torch_memory_saver.testing_utils import get_and_print_gpu_memory
 
 
-def run(hook_mode: str):
+def run():
     assert os.environ["TMS_INIT_ENABLE"] == "1"
     assert os.environ["TMS_INIT_ENABLE_CPU_BACKUP"] == "1"
-    assert hook_mode == "preload"
 
-    torch_memory_saver.hook_mode = hook_mode
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
     initial_tensor = paddle.full([1_000_000], 42, dtype='uint8').cuda()
@@ -99,4 +97,4 @@ def _execute_forward_pass_and_assert(weights: List[paddle.Tensor]):
 
 
 if __name__ == '__main__':
-    run(hook_mode=sys.argv[1])
+    run()

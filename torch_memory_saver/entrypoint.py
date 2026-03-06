@@ -10,7 +10,7 @@ import paddle
 import paddle.device.cuda as paddle_cuda
 
 from .binary_wrapper import BinaryWrapper
-from .hooks.base import HookUtilBase, HookMode
+from .hooks.base import HookUtilBase
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,6 @@ _TAG_DEFAULT = "default"
 
 class TorchMemorySaver:
     def __init__(self):
-        self._impl_ctor_kwargs = {}
         self._impl: Optional[_TorchMemorySaverImpl] = None
 
     @contextmanager
@@ -65,15 +64,6 @@ class TorchMemorySaver:
         return True
 
     @property
-    def hook_mode(self):
-        raise AttributeError
-
-    @hook_mode.setter
-    def hook_mode(self, hook_mode: HookMode):
-        assert self._impl_ctor_kwargs is not None, "Cannot configure after initialization"
-        self._impl_ctor_kwargs["hook_mode"] = hook_mode
-
-    @property
     def memory_margin_bytes(self):
         raise NotImplementedError("Only setter is supported")
 
@@ -89,15 +79,12 @@ class TorchMemorySaver:
     def _ensure_initialized(self):
         if self._impl is not None:
             return
-        self._impl = _TorchMemorySaverImpl(**self._impl_ctor_kwargs)
-        del self._impl_ctor_kwargs
+        self._impl = _TorchMemorySaverImpl()
 
 
 class _TorchMemorySaverImpl:
-    def __init__(self, hook_mode: HookMode = "preload"):
-        assert hook_mode == "preload", "Only hook_mode=preload is supported for paddle backend"
-        self._hook_mode = hook_mode
-        self._hook_util = HookUtilBase.create(hook_mode=hook_mode)
+    def __init__(self):
+        self._hook_util = HookUtilBase.create()
         self._binary_wrapper = BinaryWrapper(path_binary=self._hook_util.get_path_binary())
 
     @contextmanager
@@ -107,7 +94,6 @@ class _TorchMemorySaverImpl:
 
     @contextmanager
     def cuda_graph(self, cuda_graph, tag: str, enable_cpu_backup: bool):
-        assert self._hook_mode == "preload", "Only hook_mode=preload supports pauseable CUDA Graph currently"
         from paddle.device.cuda.graphs import CUDAGraph
         assert isinstance(cuda_graph, CUDAGraph), f"Expected paddle CUDAGraph, got {type(cuda_graph)}"
         cuda_graph.capture_begin()

@@ -55,33 +55,6 @@ cudaError_t cudaFree(void *ptr) {
 }
 #endif
 
-#ifdef TMS_HOOK_MODE_TORCH
-extern "C" {
-void *tms_torch_malloc(ssize_t size, int device, cudaStream_t stream) {
-#ifdef TMS_DEBUG_LOG
-    std::cout << "[torch_memory_saver.cpp] entrypoint::tms_torch_malloc "
-              << " size=" << size << " device=" << device << " stream=" << stream
-              << std::endl;
-#endif
-    SIMPLE_CHECK(thread_local_config.is_interesting_region(), "only support interesting region");
-    void *ptr;
-    CUDA_ERROR_CHECK(TorchMemorySaver::instance().malloc(
-        &ptr, CUDAUtils::cu_device_get(device), size, thread_local_config.current_tag_, thread_local_config.enable_cpu_backup()));
-    return ptr;
-}
-
-void tms_torch_free(void *ptr, ssize_t ssize, int device, cudaStream_t stream) {
-#ifdef TMS_DEBUG_LOG
-    std::cout << "[torch_memory_saver.cpp] entrypoint::tms_torch_free "
-              << " ptr=" << ptr << " ssize=" << ssize << " device=" << device << " stream=" << stream
-              << std::endl;
-#endif
-    SIMPLE_CHECK(thread_local_config.is_interesting_region(), "only support interesting region");
-    CUDA_ERROR_CHECK(TorchMemorySaver::instance().free(ptr));
-}
-}
-#endif
-
 // ------------------------------------------------- entrypoints :: others ------------------------------------------------
 
 extern "C" {

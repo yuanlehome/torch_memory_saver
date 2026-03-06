@@ -7,8 +7,7 @@ from torch_memory_saver import torch_memory_saver
 from torch_memory_saver.testing_utils import get_and_print_gpu_memory
 
 
-def run(hook_mode: str):
-    torch_memory_saver.hook_mode = hook_mode
+def run():
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 
     # Force CUDA context initialization on both GPUs before taking baseline measurements.
@@ -83,4 +82,4 @@ def run(hook_mode: str):
 
 
 if __name__ == '__main__':
-    run(hook_mode=sys.argv[1])
+    run()

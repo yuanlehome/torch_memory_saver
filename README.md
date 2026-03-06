@@ -68,19 +68,6 @@ torch_memory_saver.resume()
 assert tensor1[0] == 42, "content is kept unchanged"
 ```
 
-### Hook Modes
-
-There are two hook modes:
-
-* **preload**: Use `LD_PRELOAD` to hook CUDA's malloc and free API to change allocation behavior.
-* **torch**: Use torch's custom allocator API to change allocation behavior.
-
-The mode can be chosen by:
-
-```python
-torch_memory_saver.hook_mode = "torch"
-```
-
 ### Example of RL with CUDA Graph
 
 Please refer to `rl_example.py` for details.
