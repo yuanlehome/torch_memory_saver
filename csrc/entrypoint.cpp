@@ -123,4 +123,20 @@ void tms_resume(const char* tag) {
 uint8_t* tms_get_cpu_backup_pointer(const uint8_t* gpu_ptr, uint64_t size) {
     return TorchMemorySaver::instance().get_cpu_backup_pointer(gpu_ptr, size);
 }
+
+int64_t tms_create_fixed_va(size_t bytes, int device_index) {
+    return TorchMemorySaver::instance().create_fixed_va(bytes, device_index);
+}
+
+void* tms_get_fixed_va_ptr(int64_t handle) {
+    return TorchMemorySaver::instance().get_fixed_va_ptr(handle);
+}
+
+void tms_remap_fixed_va(int64_t handle, void* src_ptr, size_t src_size) {
+    TorchMemorySaver::instance().remap_fixed_va(handle, src_ptr, src_size);
+}
+
+void tms_destroy_fixed_va(int64_t handle) {
+    TorchMemorySaver::instance().destroy_fixed_va(handle);
+}
 }

@@ -87,6 +87,22 @@ class TorchMemorySaver:
         self._ensure_initialized()
         return self._impl.get_cpu_backup(x, zero_copy=zero_copy)
 
+    def create_fixed_va_tensor(self, numel: int, dtype: torch.dtype, device: torch.device):
+        """Create a tensor with a fixed virtual address that can be remapped.
+        Returns (handle, tensor)."""
+        self._ensure_initialized()
+        return self._impl.create_fixed_va_tensor(numel, dtype, device)
+
+    def remap_fixed_va_tensor(self, handle: int, src_tensor: torch.Tensor):
+        """Remap fixed VA tensor's physical backing to src_tensor's (zero-copy dual-map)."""
+        self._ensure_initialized()
+        self._impl.remap_fixed_va_tensor(handle, src_tensor)
+
+    def destroy_fixed_va_tensor(self, handle: int):
+        """Destroy a fixed VA tensor."""
+        self._ensure_initialized()
+        self._impl.destroy_fixed_va_tensor(handle)
+
     def _ensure_initialized(self):
         if self._impl is not None:
             return
@@ -185,6 +201,43 @@ class _TorchMemorySaverImpl:
         assert ans.shape == x.shape, f"{ans.shape=} {x.shape=}"
         assert ans.stride() == x.stride(), f"{ans.stride()=} {x.stride()=}"
         return ans
+
+    def create_fixed_va_tensor(self, numel: int, dtype: torch.dtype, device: torch.device):
+        element_size = torch.tensor([], dtype=dtype).element_size()
+        bytes_needed = numel * element_size
+        device_index = device.index if device.index is not None else 0
+        handle = self._binary_wrapper.cdll.tms_create_fixed_va(bytes_needed, device_index)
+        ptr = self._binary_wrapper.cdll.tms_get_fixed_va_ptr(handle)
+        tensor = _wrap_ptr_as_tensor(ptr, numel, dtype, device_index)
+        return handle, tensor
+
+    def remap_fixed_va_tensor(self, handle: int, src_tensor: torch.Tensor):
+        src_ptr = ctypes.c_void_p(src_tensor.data_ptr())
+        src_size = src_tensor.numel() * src_tensor.element_size()
+        self._binary_wrapper.cdll.tms_remap_fixed_va(handle, src_ptr, src_size)
+
+    def destroy_fixed_va_tensor(self, handle: int):
+        self._binary_wrapper.cdll.tms_destroy_fixed_va(handle)
+
+
+_tms_torch_ext = None
+
+def _get_tms_torch_ext():
+    global _tms_torch_ext
+    if _tms_torch_ext is None:
+        from torch.utils.cpp_extension import load
+        _tms_torch_ext = load(
+            name='_tms_torch_ext',
+            sources=[os.path.join(os.path.dirname(os.path.dirname(__file__)), 'csrc', 'tms_torch_ext.cpp')],
+            extra_cflags=['-O2', '-std=c++17'],
+            verbose=False,
+        )
+    return _tms_torch_ext
+
+def _wrap_ptr_as_tensor(ptr, numel, dtype, device_index):
+    ext = _get_tms_torch_ext()
+    return ext.wrap_ptr_as_tensor(ptr, numel, dtype, device_index)
+
 
 def _sanity_checks():
     if "expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""):
